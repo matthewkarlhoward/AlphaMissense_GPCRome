@@ -8,3 +8,4 @@ Uniprot was queried on September 26, 2023 for GPCR, and filtered for human resul
 
 You can search this repo for your gene name to pull up the heatmap, or look at the enclosed uniprot_seq.csv to find your gene ID and filename. 
 
+Reach out if you find errors and I'll strive to fix.
