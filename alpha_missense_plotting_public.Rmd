@@ -1,0 +1,196 @@
+---
+title: "alpha_missense_plotting"
+output: html_notebook
+---
+# code by: Matthew Howard @ UCSF
+# -
+# the goal of this code is to take alpha missense residue-level pathogenicity data for the enture GPCRome and create a databese of heatmaps. 
+# -
+# set working directory, reset to source folder on your system, this is where to put the AM data and where your heatmaps and stuctures will go
+```{r}
+setwd("/Users/..........") 
+```
+# - 
+# source packages
+```{r}
+install.packages("tidyverse")
+install.packages("bio3d")
+library(tidyverse)
+library(bio3d)
+```
+# - 
+# define order of variants on heatmaps
+```{r}
+order_missense <- c("A", "G", "M", "V", "L", "I", "T", "S", "C", "Q", "N", "Y", "W", "F", "E", "D", "H", "K", "R", "P")
+```
+# -
+# make function for parsing AM data, plotting heatmaps. just run ths block to init the functionss
+```{r}
+
+#process the alpha missense file
+process_AM_file <- function(file) {
+  # Read the TSV file
+  data <- read.delim(file, header = TRUE, sep = "\t")
+
+  # Rename the columns
+  colnames(data) <- c("uniprot_id", "protein_variant", "am_pathogenicity", "am_class")
+
+  # HGVS parsing
+  data <- data %>%
+    mutate(protein_variant = paste('p.(', protein_variant, ')', sep = ''))
+  data$pos <- as.integer(str_extract(data$protein_variant, "\\d+"))
+  data$variants <- str_sub(data$protein_variant, -2, -2)
+  data$is.wt <- str_sub(data$protein_variant, 4, 4) == str_sub(data$protein_variant, -2, -2)
+  
+  return(data)
+}
+# example usage
+# tshr_AF_missense <- process_AM_file("tshr_alpha_missense.tsv")
+
+#plot a heatmap
+create_heatmap <- function(gene, order, chunk_size, scores_df, score_column, variant_names = NULL, output_file = NULL) {
+  
+  # Check if variant_names were provided; if not, use the original variant names
+  if (is.null(variant_names)) {
+    variant_names <- order
+  }
+  
+  scores_df <- scores_df %>%
+    filter(variants %in% order)
+  
+  gene_chunks <- str_split(gene, '')[[1]]
+  num_chunks <- ceiling(length(gene_chunks) / chunk_size)
+
+  min_score <- min(scores_df[, score_column], na.rm = TRUE)
+  max_score <- max(scores_df[, score_column], na.rm = TRUE)
+
+  heatmap_plots <- list()
+
+  for (i in 1:num_chunks) {
+    start_idx <- (i - 1) * chunk_size + 1
+    end_idx <- min(i * chunk_size, length(gene_chunks))
+
+    gene_chunk <- gene_chunks[start_idx:end_idx]
+    scores_chunk <- scores_df[scores_df$pos %in% c(start_idx:(start_idx + length(gene_chunk) - 1)), ]
+    
+    # Replace the variant names with the desired names
+    scores_chunk$variants <- factor(scores_chunk$variants, levels = order, labels = variant_names)
+
+    
+    heatmap_plot <- ggplot(data = scores_chunk, aes(x = pos, y = factor(variants, level = order), fill = !!sym(score_column))) +
+      geom_tile(aes(color = "grey"), linewidth = 0.2, position = "identity") +
+      scale_fill_continuous_divergingx(palette = 'RdBu', mid = 0, l1 = 0.2, l3 = 0.2, p1 = 0.9, p3 = .4, p4 = 0.7, rev = FALSE, na.value = 'grey', limits = c(min_score, max_score)) +
+theme(
+        panel.background = element_rect(fill = "grey", size = 0.1, linetype = "solid"),
+        panel.grid.major = element_line(size = 0.1, linetype = 'solid', colour = "grey"),
+        panel.grid.minor = element_blank(),
+        #axis.ticks.x = element_blank(),
+        axis.ticks.x.top = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_text(family = "mono", size = 7, angle = 0, hjust = 0.5, vjust = 1, margin = margin(t = 1)),
+        axis.text = element_text(family = "mono", size = 7, color = "black"),
+        axis.text.x.top = element_text(family = "mono", size = 7, angle = 0, hjust = 0.5, margin = margin(r = 0)),
+        axis.text.y = element_text(family = "mono", size = 7,  margin = margin(r = 0)) ) +
+      scale_x_continuous(breaks = seq(0, 1000, by = 5), expand = c(0, 0),
+                         sec.axis = sec_axis(trans = ~., name = "Sequence", breaks = seq(start_idx, end_idx), labels = gene_chunk, guide = derive())) +
+      coord_fixed(ratio = 1) +
+      scale_color_manual(values = c(NA, 'green')) +
+      labs(y = "Mutation", x = "Position") +
+      geom_tile(data = subset(scores_chunk, !is.wt), aes(color = "green"), size = 0.2, position = "identity") +
+      geom_tile(data = subset(scores_chunk, is.wt), aes(color = "grey"), size = 0.2, position = "identity")
+    
+    heatmap_plots[[i]] <- heatmap_plot
+  }
+  heatmap_combined <- ggarrange(plotlist = heatmap_plots, nrow = num_chunks, ncol = 1)
+  ggsave(output_file, heatmap_combined, height = 10, width = 15, dpi = 600)
+}
+# Example usage
+# create_heatmap(gene, order, chunk_size, scores_df, score_column, variant_names = c("Name1", "Name2", "Name3"), output_file = "heatmap.png")
+
+
+map_scores_pdb <- function(input_pdb, mapping_scores, field, selection = NULL) {
+  
+  if (is.null(selection)) {
+    
+    selection = atom.select(input_pdb, "protein")
+  }
+  
+  output_pdb = trim.pdb(input_pdb, selection)
+  
+  for (i in seq_len(dim(output_pdb$atom[1]))) {
+    
+    if (output_pdb$atom[i,]$resno > 0) {
+      
+      n = as.character(output_pdb$atom[i,]$resno)
+      j = which(mapping_scores['pos'] == n)
+      
+      if (length(j) == 0) {
+        score = 0
+        
+      } else {
+        score = mapping_scores[j, field][[1]]
+      }
+      
+      if (!is.na(score)) {
+        
+        output_pdb$atom[i,]$b = score
+        
+      } else {
+        
+        output_pdb$atom[i,]$b = 0
+        
+      }
+    } else {
+      output_pdb$atom[i,]$b = 0
+    }
+  }
+  
+  return(output_pdb)
+}
+```
+# -
+#loop over the entire GPCRome
+```{r}
+
+library(readr)
+
+# Read the CSV file
+csv_data <- read_csv("GPCRome/uniprot_seq.csv")
+colnames(csv_data) <- c("uniprot_id", "gene_name", "seq")
+
+# Set the subfolder name
+subfolder_name <- "GPCRome"  # Replace with the actual subfolder name
+
+# Construct the full path to the subfolder
+subfolder_path <- file.path(getwd(), subfolder_name)
+
+# Change the working directory to the subfolder
+setwd(subfolder_path)
+
+# Read the CSV file
+csv_data <- read_csv("uniprot_seq.csv")
+
+# Loop through each row of the CSV file and call the functions
+for (i in 1:nrow(csv_data)) {
+  gene_name <- csv_data$gene_name[i]  # Assuming "GeneName" is the column name with gene names
+  amino_acid_seq <- csv_data$seq[i]  # Assuming "AminoAcidSeq" is the column name with sequences
+
+  # Call process_AM_file function
+  tsv_file_name <- paste0(gene_name, ".tsv")
+  tsv_data <- process_AM_file(tsv_file_name)
+
+  # Call create_heatmap function
+  create_heatmap(
+    gene = amino_acid_seq,
+    order = unique(tsv_data$variants),
+    chunk_size = 10,  # Adjust as needed
+    scores_df = tsv_data,
+    score_column = "am_pathogenicity",  # Adjust as needed
+    variant_names = NULL,  # Use default variant names
+    output_file = paste0(gene_name, "_heatmap.png")
+  )
+}
+
+
+```
+
